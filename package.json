@@ -1,0 +1,48 @@
+{
+    "name":                          "execa-cli",
+    "homepage":                      "https://github.com/rse/execa-cli",
+    "description":                   "Execute commands from the CLI with the Execa library",
+    "keywords":                      [ "execa", "exec", "spawn", "process", "cli" ],
+    "version":                       "0.9.0",
+    "license":                       "MIT",
+    "author": {
+        "name":                      "Dr. Ralf S. Engelschall",
+        "email":                     "rse@engelschall.com",
+        "url":                       "http://engelschall.com"
+    },
+    "repository":                    { "type": "git", "url":  "git+https://github.com/rse/execa-cli.git" },
+    "bugs":                          { "url":  "http://github.com/rse/execa-cli/issues" },
+    "bin": {
+        "execa":                     "dist/execa-cli.js"
+    },
+    "type":                          "module",
+    "dependencies": {
+        "@dotenvx/dotenvx":          "2.14.0",
+        "commander":                 "15.0.0",
+        "execa":                     "10.0.0"
+    },
+    "devDependencies": {
+        "eslint":                    "9.39.5",
+        "@eslint/js":                "9.39.5",
+        "typescript-eslint":         "8.64.0",
+        "eslint-plugin-promise":     "7.3.0",
+        "eslint-plugin-import":      "2.32.0",
+        "neostandard":               "0.13.0",
+        "globals":                   "17.7.0",
+        "@types/node":               "26.1.1",
+        "typescript":                "6.0.3"
+    },
+    "engines": {
+        "node":                      ">=22.0.0"
+    },
+    "scripts": {
+        "lint":                      "eslint --config eslint.mjs",
+        "build":                     "tsc --project tsconfig.json && chmod +x dist/execa-cli.js",
+        "prepublishOnly":            "npm run lint && npm run build",
+        "start":                     "node dist/execa-cli.js"
+    },
+    "files": [
+        "dist",
+        "execa-cli.ts"
+    ]
+}
