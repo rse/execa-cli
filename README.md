@@ -19,18 +19,14 @@ This is a tiny Command-Line Interface (CLI) for conveniently
 and portably executing commands with the excellent
 [Execa](https://github.com/sindresorhus/execa) process execution
 library. It exposes the most useful Execa options as regular
-command-line options and passes them through to Execa. This way, the
-process handling niceties of Execa -- like local binary resolution,
-reliable timeouts, graceful termination and automatic cleanup of child
-processes -- become available directly from the shell.
+command-line options and passes them through to Execa. The standard
+input, output, and error streams of the executed command are inherited
+from Execa, so the command behaves exactly as if it had been started
+directly. The exit code of the command is relayed as the exit code of
+Execa.
 
-The standard input, output and error streams of the executed command are
-inherited from Execa, so the command behaves exactly as if it had been
-started directly. The exit code of the command is relayed as the exit
-code of Execa.
-
-Compared to calling a command bare in the shell, this CLI adds the
-following, without requiring any shell scaffolding:
+Compared to calling a command bare in the shell, this execution wrapping
+CLI adds the following benefits, without requiring any shell scaffolding:
 
 - **Scoped working directory**: the `--cwd` option changes the working
   directory of the command only. In contrast to a `cd dir && cmd`
@@ -62,11 +58,11 @@ following, without requiring any shell scaffolding:
 - **Dotenv support**: a `.env` file in the current working directory is
   automatically loaded into the environment before the command is
   executed, so both the options driven by `EXECA_*` variables and the
-  command itself see its variables. Neither a shell-specific `source`
+  command itself see their variables. Neither a shell-specific `source`
   construct nor a wrapper like `dotenv-cli` is necessary.
 
 - **Process tree termination**: the `--kill-tree` option runs the command
-  in an own process group and terminates that entire group. A command
+  in its own process group and terminates that entire group. A command
   which spawns further processes of its own hence leaves nothing behind,
   which neither a bare call nor a plain `kill` achieves.
 
