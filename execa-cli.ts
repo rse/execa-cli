@@ -179,7 +179,7 @@ async function main (): Promise<never> {
             return false
         try { process.kill(-pgid, signal); return true }
         catch (error) {
-            const code = (error as NodeJS.ErrnoException).code
+            const code = (error as { code?: string }).code
             /*  "ESRCH" means the group is gone, "EPERM" means it still
                 exists but is just not signalable by us, so stop retrying  */
             if (code !== "ESRCH" && code !== "EPERM")
