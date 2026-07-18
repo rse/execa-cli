@@ -7,7 +7,8 @@
 
 /*  built-in dependencies  */
 import process                                   from "node:process"
-import { readFileSync }                          from "node:fs"
+import { readFileSync, writeFileSync }           from "node:fs"
+import { constants }                             from "node:os"
 import { fileURLToPath }                         from "node:url"
 
 /*  external dependencies  */
@@ -20,7 +21,7 @@ import { execa }                                 from "execa"
     resolves both when run as source and when run as compiled dist/ output)  */
 const pkg = JSON.parse(readFileSync(
     fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as
-    { name: string, version: string, bin: Record<string, string> }
+    { version: string }
 
 /*  load potential .env file into the environment
     (optional, so stay silent if absent)  */
@@ -31,18 +32,29 @@ const cmd = "execa"
 
 /*  emit a fatal error and terminate the process  */
 const fatal = (msg: string): never => {
-    process.stderr.write(`${cmd}: ERROR: ${msg}\n`)
+    /*  write synchronously, as process.exit() would truncate a
+        pending asynchronous write on a pipe  */
+    writeFileSync(process.stderr.fd, `${cmd}: ERROR: ${msg}\n`)
     process.exit(1)
 }
 
 /*  the subset of POSIX signals used for terminating a process group  */
-type Signal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGKILL"
+const signals = [ "SIGINT", "SIGTERM", "SIGHUP", "SIGKILL", "SIGQUIT", "SIGUSR1", "SIGUSR2" ] as const
+type Signal = typeof signals[number]
+
+/*  the subset of signals relayed from this process to the process group  */
+const signalsRelayed = [ "SIGINT", "SIGTERM", "SIGHUP" ] as const satisfies readonly Signal[]
+
+/*  the POSIX signal numbers used for the "128 + N" exit status convention  */
+const signalNumber = constants.signals as Record<string, number | undefined>
 
 /*  parse an option value as a non-negative integer  */
 const parseInteger = (value: string, name: string): number => {
-    const num = Number(value)
-    if (!Number.isInteger(num) || num < 0)
+    if (!/^\d+$/.test(value))
         throw new InvalidArgumentError(`invalid ${name} "${value}" (use a non-negative integer)`)
+    const num = Number(value)
+    if (!Number.isSafeInteger(num))
+        throw new InvalidArgumentError(`invalid ${name} "${value}" (value out of range)`)
     return num
 }
 
@@ -51,7 +63,10 @@ const parseKeyValue = (value: string, previous: Record<string, string>): Record<
     const idx = value.indexOf("=")
     if (idx < 1)
         throw new InvalidArgumentError(`invalid environment assignment "${value}" (use "KEY=VALUE")`)
-    return { ...previous, [value.slice(0, idx)]: value.slice(idx + 1) }
+    const key = value.slice(0, idx)
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+        throw new InvalidArgumentError(`invalid environment variable name "${key}"`)
+    return { ...previous, [key]: value.slice(idx + 1) }
 }
 
 /*  parse the command-line options  */
@@ -76,6 +91,7 @@ program
         .argParser((value) => parseInteger(value, "timeout"))
         .env("EXECA_TIMEOUT"))
     .addOption(new Option("-k, --kill-signal <signal>", "signal used to terminate the command")
+        .choices([ ...signals ])
         .env("EXECA_KILL_SIGNAL"))
     .addOption(new Option("-d, --force-kill-after-delay <ms>", "send SIGKILL if the command is still running after the given time")
         .argParser((value) => parseInteger(value, "force-kill delay")))
@@ -107,7 +123,7 @@ const opts = program.opts<{
     shell?:                string | boolean
     input?:                string
     timeout?:              number
-    killSignal?:           string
+    killSignal?:           Signal
     forceKillAfterDelay?:  number
     preferLocal?:          boolean
     localDir?:             string
@@ -127,7 +143,7 @@ const passEnv = Object.keys(opts.env).length > 0 || !opts.extendEnv
 
 /*  assemble the Execa options, passing through only the explicitly given ones,
     so that Execa's own defaults still apply to all remaining options  */
-const options = {
+const options: Parameters<typeof execa>[1] = {
     ...(opts.input === undefined ? { stdin: "inherit" } : {}),
     stdout:  "inherit",
     stderr:  "inherit",
@@ -147,39 +163,70 @@ const options = {
     ...(opts.killTree                          ? { detached:            true                     } : {}),
     ...(!opts.windowsHide                      ? { windowsHide:         false                    } : {}),
     ...(opts.verbose             !== undefined ? { verbose:             opts.verbose             } : {})
-} as Parameters<typeof execa>[1]
+}
 
 /*  main entry point  */
-async function main () {
+async function main (): Promise<never> {
     /*  execute the command  */
     const subprocess = execa(command, args, options)
 
     /*  in process tree mode the command is the leader of its own process
         group, so signaling the negated PID reaches all of its descendants  */
-    const pgid = opts.killTree ? subprocess.pid : undefined
-    const killTree = (signal: Signal) => {
-        if (pgid === undefined)
-            return
-        try { process.kill(-pgid, signal) }
-        catch { /*  group already gone  */ }
+    const pgid = opts.killTree && subprocess.pid ? subprocess.pid : undefined
+    let unsignalable = false
+    const signalTree = (signal: Signal | 0): boolean => {
+        if (pgid === undefined || unsignalable)
+            return false
+        try { process.kill(-pgid, signal); return true }
+        catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            /*  "ESRCH" means the group is gone, "EPERM" means it still
+                exists but is just not signalable by us, so stop retrying  */
+            if (code !== "ESRCH" && code !== "EPERM")
+                fatal(`failed to signal process group ${pgid}: ${String(error)}`)
+            if (code === "EPERM")
+                unsignalable = true
+            return false
+        }
     }
+
+    /*  terminate or probe the whole process group  */
+    const killTree  = (signal: Signal) => { signalTree(signal) }
+    const aliveTree = () => signalTree(0)
 
     /*  relay interactive signals to the whole process group, as the
         detached command no longer shares the terminal's job control  */
     if (pgid !== undefined)
-        for (const signal of [ "SIGINT", "SIGTERM", "SIGHUP" ] as Signal[])
-            process.on(signal, () => killTree(signal))
+        for (const signal of signalsRelayed)
+            process.on(signal, () => {
+                killTree(signal)
+                try { subprocess.kill(signal) }
+                catch { /*  the command already exited, so nothing to signal  */ }
+            })
 
     /*  await the command and relay its exit status  */
     const result = await subprocess
 
     /*  reap any descendants outliving the command itself, as Execa
-        terminates only the command and not its whole process group  */
-    killTree("SIGKILL")
+        terminates only the command and not its whole process group:
+        signal them gracefully first, then force-kill the remainder  */
+    if (aliveTree()) {
+        killTree(opts.killSignal ?? "SIGTERM")
+        const deadline = Date.now() + (opts.forceKillAfterDelay ?? 5000)
+        while (aliveTree() && Date.now() < deadline)
+            await new Promise<void>((resolve) => { setTimeout(resolve, 50) })
+        if (aliveTree())
+            killTree("SIGKILL")
+    }
 
+    /*  relay the exit status, mapping a terminating signal onto the
+        conventional "128 + N" shell exit status  */
     if (result.failed && result.exitCode === undefined)
         fatal(result.shortMessage ?? "command execution failed")
-    process.exit(result.exitCode ?? 1)
+    if (result.exitCode !== undefined)
+        process.exit(result.exitCode)
+    const num = result.signal !== undefined ? signalNumber[result.signal] : undefined
+    process.exit(num !== undefined ? 128 + num : 1)
 }
 main().catch((error) => {
     const msg = error instanceof Error ? error.message : String(error)
